@@ -15,8 +15,15 @@
 
 [CmdletBinding()]
 param(
-    [string]$Path
+    [string]$Path,
+    [switch]$Version
 )
+
+$script:AppVersion = [version]'1.0.0'
+if ($Version) {
+    "MD-Browser $script:AppVersion"
+    return
+}
 
 # WPF needs a single threaded apartment - relaunch if we are not in one.
 if ([Threading.Thread]::CurrentThread.GetApartmentState() -ne 'STA') {
@@ -855,7 +862,7 @@ function Set-Status {
 function Update-Title {
     $name = if ($script:CurrentFile) { $script:CurrentFile } else { '(no file)' }
     $mark = if ($script:IsDirty) { ' *' } else { '' }
-    $win.Title = "MD-Browser - $name$mark"
+    $win.Title = "MD-Browser $script:AppVersion - $name$mark"
     $BtnSave.IsEnabled = $script:IsDirty
 }
 
