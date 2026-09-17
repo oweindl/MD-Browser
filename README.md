@@ -40,21 +40,3 @@ To print the installed version:
 ```
 
 Without `-Path`, MD-Browser reopens the last used folder. If no valid folder was remembered, it uses the configured default folder and then the current user's home directory as fallbacks. An explicit `-Path` always takes precedence and becomes the remembered folder.
-
-## Tests
-
-Run the available PowerShell harnesses from the project folder:
-
-```powershell
-.\_test-default-startup.ps1
-.\_test-remembered-path.ps1
-.\_test-reveal-selection.ps1
-.\_test-search-navigation.ps1
-.\_test-version.ps1
-```
-
-The close-behavior harness is interactive:
-
-```powershell
-.\_test-current-close.ps1
-```
