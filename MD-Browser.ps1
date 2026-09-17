@@ -19,7 +19,7 @@ param(
     [switch]$Version
 )
 
-$script:AppVersion = [version]'1.1.1'
+$script:AppVersion = [version]'1.2.0'
 $script:GitHubRepository = 'oweindl/MD-Browser'
 if ($Version) {
     "MD-Browser $script:AppVersion"
@@ -38,13 +38,71 @@ if ([Threading.Thread]::CurrentThread.GetApartmentState() -ne 'STA') {
 
 Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase, System.Windows.Forms, System.Web
 
+function Start-UpdateHelper {
+    param(
+        [string]$DownloadedPath,
+        [string]$TargetPath = $PSCommandPath,
+        [string]$RootPath = $script:RootPath,
+        [int]$ProcessId = $PID
+    )
+
+    $helperPath = Join-Path ([System.IO.Path]::GetTempPath()) ('.MD-Browser-{0}.update.ps1' -f [guid]::NewGuid())
+    $helperSource = @'
+param(
+    [int]$ProcessId,
+    [string]$DownloadedPath,
+    [string]$TargetPath,
+    [string]$ShellPath,
+    [string]$RootPath
+)
+
+$backupPath = "$TargetPath.bak"
+$stagedPath = "$TargetPath.update"
+try {
+    Wait-Process -Id $ProcessId -ErrorAction SilentlyContinue
+    Copy-Item -LiteralPath $DownloadedPath -Destination $stagedPath -Force
+    if (Test-Path -LiteralPath $TargetPath -PathType Leaf) {
+        [System.IO.File]::Replace($stagedPath, $TargetPath, $backupPath)
+        Remove-Item -LiteralPath $backupPath -Force -ErrorAction SilentlyContinue
+    } else {
+        Move-Item -LiteralPath $stagedPath -Destination $TargetPath -Force
+    }
+
+    $arguments = @('-STA', '-NoProfile', '-File', "`"$TargetPath`"")
+    if ($RootPath) { $arguments += @('-Path', "`"$RootPath`"") }
+    Start-Process -FilePath $ShellPath -ArgumentList $arguments `
+                  -WorkingDirectory (Split-Path -Parent $TargetPath) -WindowStyle Normal
+} catch {
+    [System.IO.File]::WriteAllText("$TargetPath.update-error.txt", $_.Exception.ToString())
+} finally {
+    Remove-Item -LiteralPath $stagedPath -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $DownloadedPath -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $PSCommandPath -Force -ErrorAction SilentlyContinue
+}
+'@
+    [System.IO.File]::WriteAllText($helperPath, $helperSource, (New-Object System.Text.UTF8Encoding($false)))
+
+    $shell = Join-Path $env:WINDIR 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    if (-not (Test-Path -LiteralPath $shell)) { $shell = (Get-Process -Id $PID).Path }
+    $arguments = @(
+        '-NoProfile', '-WindowStyle', 'Hidden', '-File', "`"$helperPath`"",
+        '-ProcessId', $ProcessId,
+        '-DownloadedPath', "`"$DownloadedPath`"",
+        '-TargetPath', "`"$TargetPath`"",
+        '-ShellPath', "`"$shell`""
+    )
+    if ($RootPath) { $arguments += @('-RootPath', "`"$RootPath`"") }
+    Start-Process -FilePath $shell -ArgumentList $arguments -WindowStyle Hidden -PassThru
+}
+
 function Start-GitHubVersionCheck {
     if ($script:UpdateCheckStarted) { return }
     $script:UpdateCheckStarted = $true
 
     $script:UpdateCheckPowerShell = [powershell]::Create()
     $checkScript = {
-        param([string]$Repository)
+        param([string]$Repository, [version]$CurrentVersion)
+        $downloadPath = $null
         try {
             [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor `
                                                            [Net.SecurityProtocolType]::Tls12
@@ -52,13 +110,42 @@ function Start-GitHubVersionCheck {
             $tags = Invoke-RestMethod -Uri "https://api.github.com/repos/$Repository/tags?per_page=100" `
                                       -Headers $headers -TimeoutSec 5 -ErrorAction Stop
             $versions = foreach ($tag in $tags) {
-                if ($tag.name -match '^v(\d+\.\d+\.\d+)$') { [version]$Matches[1] }
+                if ($tag.name -match '^v(\d+\.\d+\.\d+)$') {
+                    [pscustomobject]@{ Tag = $tag.name; Version = [version]$Matches[1] }
+                }
             }
-            $latest = $versions | Sort-Object -Descending | Select-Object -First 1
-            if ($latest) { $latest.ToString() }
-        } catch { }
+            $latest = $versions | Sort-Object Version -Descending | Select-Object -First 1
+            if (-not $latest -or $latest.Version -le $CurrentVersion) { return }
+
+            $downloadPath = Join-Path ([System.IO.Path]::GetTempPath()) `
+                                      ('MD-Browser-{0}-{1}.ps1' -f $latest.Version, [guid]::NewGuid())
+            $downloadUrl = "https://raw.githubusercontent.com/$Repository/$($latest.Tag)/MD-Browser.ps1"
+            Invoke-WebRequest -Uri $downloadUrl -Headers $headers -UseBasicParsing -TimeoutSec 15 `
+                              -OutFile $downloadPath -ErrorAction Stop
+
+            $source = [System.IO.File]::ReadAllText($downloadPath)
+            if ($source -notmatch '(?m)^\s*\$script:AppVersion\s*=\s*\[version\]''([^'']+)''\s*$' -or
+                [version]$Matches[1] -ne $latest.Version) {
+                throw 'The downloaded script version does not match the GitHub tag.'
+            }
+            $tokens = $null
+            $parseErrors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile(
+                $downloadPath, [ref]$tokens, [ref]$parseErrors) | Out-Null
+            if ($parseErrors.Count -gt 0) { throw 'The downloaded script failed syntax validation.' }
+
+            [pscustomobject]@{
+                Version = $latest.Version.ToString()
+                Path = $downloadPath
+            }
+            $downloadPath = $null
+        } catch {
+            if ($downloadPath) { Remove-Item -LiteralPath $downloadPath -Force -ErrorAction SilentlyContinue }
+        }
     }
-    $script:UpdateCheckPowerShell.AddScript($checkScript.ToString()).AddArgument($script:GitHubRepository) | Out-Null
+    $script:UpdateCheckPowerShell.AddScript($checkScript.ToString()) | Out-Null
+    $script:UpdateCheckPowerShell.AddArgument($script:GitHubRepository) | Out-Null
+    $script:UpdateCheckPowerShell.AddArgument($script:AppVersion) | Out-Null
     $script:UpdateCheckAsync = $script:UpdateCheckPowerShell.BeginInvoke()
 
     $script:UpdateCheckTimer = New-Object System.Windows.Threading.DispatcherTimer
@@ -69,19 +156,35 @@ function Start-GitHubVersionCheck {
         try {
             $result = @($script:UpdateCheckPowerShell.EndInvoke($script:UpdateCheckAsync))
             if ($result.Count -gt 0) {
-                $latestVersion = [version][string]$result[0]
-                if ($latestVersion -gt $script:AppVersion) {
-                    [System.Windows.MessageBox]::Show(
+                $latestVersion = [version][string]$result[0].Version
+                $downloadedPath = [string]$result[0].Path
+                $answer = [System.Windows.MessageBox]::Show(
                         $win,
-                        "MD-Browser $latestVersion is available on GitHub. You are running $script:AppVersion.`n`nVisit https://github.com/$script:GitHubRepository/releases to download it.",
+                        "MD-Browser $latestVersion is available on GitHub. You are running $script:AppVersion.`n`nInstall the update and restart MD-Browser now?",
                         'MD-Browser update available',
-                        [System.Windows.MessageBoxButton]::OK,
-                        [System.Windows.MessageBoxImage]::Information) | Out-Null
+                        [System.Windows.MessageBoxButton]::YesNo,
+                        [System.Windows.MessageBoxImage]::Information)
+                if ($answer -eq [System.Windows.MessageBoxResult]::Yes -and (Confirm-PendingChanges)) {
+                    try {
+                        Start-UpdateHelper -DownloadedPath $downloadedPath | Out-Null
+                        $script:UpdateRestartPending = $true
+                        $win.Close()
+                    } catch {
+                        Remove-Item -LiteralPath $downloadedPath -Force -ErrorAction SilentlyContinue
+                        [System.Windows.MessageBox]::Show(
+                            $win,
+                            "The update could not be started.`n`n$($_.Exception.Message)",
+                            'MD-Browser update',
+                            [System.Windows.MessageBoxButton]::OK,
+                            [System.Windows.MessageBoxImage]::Warning) | Out-Null
+                    }
+                } else {
+                    Remove-Item -LiteralPath $downloadedPath -Force -ErrorAction SilentlyContinue
                 }
             }
         } catch { }
         finally {
-            $script:UpdateCheckPowerShell.Dispose()
+            if ($script:UpdateCheckPowerShell) { $script:UpdateCheckPowerShell.Dispose() }
             $script:UpdateCheckPowerShell = $null
             $script:UpdateCheckAsync = $null
             $script:UpdateCheckTimer = $null
@@ -127,6 +230,7 @@ $script:UpdateCheckPowerShell = $null
 $script:UpdateCheckAsync = $null
 $script:UpdateCheckTimer = $null
 $script:UpdateCheckStarted = $false
+$script:UpdateRestartPending = $false
 
 $script:MarkdownExt     = @('.md', '.markdown', '.mdown', '.mkd')
 $script:LinkHost        = 'http://md-browser.local/'
@@ -1701,6 +1805,7 @@ $win.Add_KeyDown({
 $win.Add_Closing({
     param($sender, $e)
     if (-not (Confirm-PendingChanges)) { $e.Cancel = $true; return }
+    if ($script:UpdateRestartPending) { return }
     if ($script:UpdateCheckTimer) { $script:UpdateCheckTimer.Stop() }
     if ($script:UpdateCheckPowerShell) {
         try {

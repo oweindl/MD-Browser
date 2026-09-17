@@ -20,7 +20,7 @@ MD-Browser is a companion viewer/editor for [SecondBrain](https://github.com/owe
 - External-link support
 - GitHub-style task checkbox toggling
 - Remembers the last opened folder between launches
-- Checks GitHub for newer versions in the background and notifies when one is available
+- Checks GitHub for newer versions in the background and can install them through a separate updater process
 - No external runtime dependencies
 
 ## SecondBrain compatibility
