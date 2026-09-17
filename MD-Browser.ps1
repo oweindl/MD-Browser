@@ -68,6 +68,7 @@ $script:MarkdownExt     = @('.md', '.markdown', '.mdown', '.mkd')
 $script:LinkHost        = 'http://md-browser.local/'
 $script:DefaultFolder   = 'Brain'
 $script:ContentMinChars = 3
+$script:SettingsPath    = Join-Path (Join-Path $env:LOCALAPPDATA 'MD-Browser') 'settings.json'
 
 #endregion
 
@@ -525,7 +526,7 @@ span.mdhit { background: #ffe95e; color: #24292f; }
         <ToggleButton x:Name="BtnEdit" Padding="8,3" ToolTip="Switch between preview and editor (F4)">Edit</ToggleButton>
         <Button x:Name="BtnSave" Padding="8,3" ToolTip="Save the current file (Ctrl+S)" IsEnabled="False">Save</Button>
         <Separator />
-        <Button x:Name="BtnReveal" Padding="8,3" ToolTip="Show the current file in Explorer">Show in Explorer</Button>
+        <Button x:Name="BtnReveal" Padding="8,3" ToolTip="Show the selected tree item in Explorer">Show in Explorer</Button>
       </ToolBar>
     </ToolBarTray>
 
@@ -1381,6 +1382,29 @@ function Get-UserHomeRoot {
     $null
 }
 
+function Get-RememberedRoot {
+    if (-not (Test-Path -LiteralPath $script:SettingsPath -PathType Leaf)) { return $null }
+    try {
+        $settings = Get-Content -LiteralPath $script:SettingsPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        if ($settings.LastRoot -and (Test-Path -LiteralPath $settings.LastRoot -PathType Container)) {
+            return (Resolve-Path -LiteralPath $settings.LastRoot).Path
+        }
+    } catch { }
+    $null
+}
+
+function Save-RememberedRoot {
+    param([string]$FolderPath)
+
+    try {
+        $settingsFolder = Split-Path -Parent $script:SettingsPath
+        if (-not (Test-Path -LiteralPath $settingsFolder -PathType Container)) {
+            New-Item -ItemType Directory -Path $settingsFolder -Force | Out-Null
+        }
+        @{ LastRoot = $FolderPath } | ConvertTo-Json | Set-Content -LiteralPath $script:SettingsPath -Encoding UTF8
+    } catch { }
+}
+
 function Select-RootFolder {
     param([string]$Initial)
 
@@ -1548,13 +1572,14 @@ $BtnOpen.Add_Click({
     if (-not (Confirm-PendingChanges)) { return }
     $p = Select-RootFolder -Initial $script:RootPath
     if ($p) {
-        $script:RootPath = $p
+        $script:RootPath = (Resolve-Path -LiteralPath $p).Path
+        Save-RememberedRoot -FolderPath $script:RootPath
         $script:Standalone.Clear()
         $script:ContentCache.Clear()
         Clear-History
         $TxtFilter.Text = ''
         Update-Tree -Filter ''
-        Set-Status "Root: $p"
+        Set-Status "Root: $script:RootPath"
     }
 })
 
@@ -1577,11 +1602,21 @@ $BtnEdit.Add_Click({
 
 $BtnSave.Add_Click({ Save-CurrentFile })
 
-$BtnReveal.Add_Click({
-    if ($script:CurrentFile -and (Test-Path -LiteralPath $script:CurrentFile)) {
-        Start-Process explorer.exe "/select,`"$($script:CurrentFile)`""
+function Show-SelectedTreeItemInExplorer {
+    $item = $Tree.SelectedItem
+    if (-not $item -or -not $item.Tag -or -not $item.Tag.Path) { return }
+
+    $selectedPath = [string]$item.Tag.Path
+    if (Test-Path -LiteralPath $selectedPath -PathType Container) {
+        Start-Process explorer.exe "`"$selectedPath`""
+    } elseif (Test-Path -LiteralPath $selectedPath -PathType Leaf) {
+        Start-Process explorer.exe "/select,`"$selectedPath`""
+    } else {
+        Set-Status "Path not found: $selectedPath"
     }
-})
+}
+
+$BtnReveal.Add_Click({ Show-SelectedTreeItemInExplorer })
 
 $win.Add_KeyDown({
     param($sender, $e)
@@ -1617,16 +1652,21 @@ if ($pathWasSpecified) {
         $startupNote = "The requested folder '$invalidPath' was not found. Loaded the user home directory instead."
     }
 } else {
-    $Path = Get-DefaultRoot
-    if ($Path) { $startupNote = "Loaded the default folder '$script:DefaultFolder' from OneDrive for Business." }
+    $Path = Get-RememberedRoot
+    if ($Path) { $startupNote = 'Loaded the last used folder.' }
     else {
-        $Path = Get-UserHomeRoot
-        $startupNote = "The default folder '$script:DefaultFolder' was not found. Loaded the user home directory instead."
+        $Path = Get-DefaultRoot
+        if ($Path) { $startupNote = "Loaded the default folder '$script:DefaultFolder' from OneDrive for Business." }
+        else {
+            $Path = Get-UserHomeRoot
+            $startupNote = "The default folder '$script:DefaultFolder' was not found. Loaded the user home directory instead."
+        }
     }
 }
 if (-not $Path) { return }
 
 $script:RootPath = (Resolve-Path -LiteralPath $Path).Path
+Save-RememberedRoot -FolderPath $script:RootPath
 Update-Tree -Filter ''
 Set-Status $(if ($startupNote) { "$startupNote  Root: $script:RootPath" } else { "Root: $script:RootPath" })
 Update-Title

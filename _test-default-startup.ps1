@@ -1,10 +1,11 @@
 $root = Join-Path $env:TEMP 'md-browser-default-startup'
 $oneDrive = Join-Path $env:TEMP 'md-browser-default-onedrive'
+$localAppData = Join-Path $env:TEMP 'md-browser-default-appdata'
 $harnessPath = Join-Path $env:TEMP 'md-browser-default-startup-harness.ps1'
 
 try {
-	Remove-Item $root, $oneDrive -Recurse -Force -ErrorAction SilentlyContinue
-	New-Item $root, $oneDrive -ItemType Directory | Out-Null
+	Remove-Item $root, $oneDrive, $localAppData -Recurse -Force -ErrorAction SilentlyContinue
+	New-Item $root, $oneDrive, $localAppData -ItemType Directory | Out-Null
 	Set-Content (Join-Path $root 'first.md') '# First' -Encoding UTF8
 
 	$source = Get-Content (Join-Path $PSScriptRoot 'MD-Browser.ps1') -Raw
@@ -17,16 +18,19 @@ if ($Tree.Items.Count -ne 1) { throw "Unexpected tree root count: $($Tree.Items.
 
 	$oldHome = $env:HOME
 	$oldOneDrive = $env:OneDriveCommercial
+	$oldLocalAppData = $env:LOCALAPPDATA
 	$env:HOME = $root
 	$env:OneDriveCommercial = $oneDrive
+	$env:LOCALAPPDATA = $localAppData
 	try {
 		& powershell.exe -STA -NoProfile -File $harnessPath
 		if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 	} finally {
 		$env:HOME = $oldHome
 		$env:OneDriveCommercial = $oldOneDrive
+		$env:LOCALAPPDATA = $oldLocalAppData
 	}
 } finally {
 	Remove-Item $harnessPath -Force -ErrorAction SilentlyContinue
-	Remove-Item $root, $oneDrive -Recurse -Force -ErrorAction SilentlyContinue
+	Remove-Item $root, $oneDrive, $localAppData -Recurse -Force -ErrorAction SilentlyContinue
 }

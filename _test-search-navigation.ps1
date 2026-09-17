@@ -1,9 +1,10 @@
 $root = Join-Path $env:TEMP 'md-browser-search-navigation'
+$localAppData = Join-Path $env:TEMP 'md-browser-search-navigation-appdata'
 $harness = Join-Path $env:TEMP 'md-browser-search-navigation-harness.ps1'
 
 try {
-    Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
-    New-Item -ItemType Directory -Path $root | Out-Null
+    Remove-Item $root, $localAppData -Recurse -Force -ErrorAction SilentlyContinue
+    New-Item -ItemType Directory -Path $root, $localAppData | Out-Null
     $lines = @('# Search test', 'needle near the top')
     $lines += 1..160 | ForEach-Object { "Filler line $_" }
     $lines += 'needle near the bottom'
@@ -71,10 +72,16 @@ if ($script:TestResult -ne 'PASS') { throw $script:TestResult }
 '@
 
     [System.IO.File]::WriteAllText($harness, $source.Replace('$win.ShowDialog() | Out-Null', $testBody))
-    & powershell.exe -STA -NoProfile -File $harness -Path $root
-    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    $oldLocalAppData = $env:LOCALAPPDATA
+    $env:LOCALAPPDATA = $localAppData
+    try {
+        & powershell.exe -STA -NoProfile -File $harness -Path $root
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    } finally {
+        $env:LOCALAPPDATA = $oldLocalAppData
+    }
     'Search navigation test PASS'
 } finally {
     Remove-Item -LiteralPath $harness -Force -ErrorAction SilentlyContinue
-    Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item $root, $localAppData -Recurse -Force -ErrorAction SilentlyContinue
 }
