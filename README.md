@@ -2,6 +2,14 @@
 
 A lightweight Windows desktop application for browsing, searching, previewing, and editing folders of Markdown files.
 
+MD-Browser is a companion viewer/editor for [SecondBrain](https://github.com/oweindl/SecondBrain), an agent-agnostic Markdown knowledge-space pattern. It can browse any Markdown folder, and it works especially well with SecondBrain structures such as:
+
+```text
+<RootFolder>\SecondBrain\<BrainName>\context.md
+<RootFolder>\SecondBrain\<BrainName>\startup.md
+<RootFolder>\SecondBrain\index.md
+```
+
 ## Features
 
 - Folder tree with file-name and content search
@@ -12,7 +20,24 @@ A lightweight Windows desktop application for browsing, searching, previewing, a
 - External-link support
 - GitHub-style task checkbox toggling
 - Remembers the last opened folder between launches
+- Checks GitHub for newer versions and offers to install them
 - No external runtime dependencies
+
+## SecondBrain compatibility
+
+MD-Browser does not require a SecondBrain folder, but it recognizes the pattern naturally because SecondBrain uses plain Markdown files and local links.
+
+Recommended optional frontmatter for `context.md`:
+
+```yaml
+---
+brainName: Example Brain
+schema: secondbrain-v1
+browser: md-browser
+---
+```
+
+This metadata is optional; MD-Browser remains a general-purpose Markdown folder browser.
 
 ## Requirements
 

@@ -19,7 +19,8 @@ param(
     [switch]$Version
 )
 
-$script:AppVersion = [version]'1.0.0'
+$script:AppVersion = [version]'1.1.0'
+$script:GitHubRepository = 'oweindl/MD-Browser'
 if ($Version) {
     "MD-Browser $script:AppVersion"
     return
@@ -36,6 +37,85 @@ if ([Threading.Thread]::CurrentThread.GetApartmentState() -ne 'STA') {
 }
 
 Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase, System.Windows.Forms, System.Web
+
+function Get-LatestGitHubVersion {
+    [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor `
+                                                   [Net.SecurityProtocolType]::Tls12
+    $headers = @{ 'User-Agent' = 'MD-Browser' }
+    $tags = Invoke-RestMethod -Uri "https://api.github.com/repos/$script:GitHubRepository/tags?per_page=100" `
+                              -Headers $headers -TimeoutSec 5 -ErrorAction Stop
+    $versions = foreach ($tag in $tags) {
+        if ($tag.name -match '^v(\d+\.\d+\.\d+)$') {
+            [pscustomobject]@{ Tag = $tag.name; Version = [version]$Matches[1] }
+        }
+    }
+    $versions | Sort-Object Version -Descending | Select-Object -First 1
+}
+
+function Install-GitHubUpdate {
+    param([string]$Tag, [version]$ExpectedVersion)
+
+    $tempPath = Join-Path (Split-Path -Parent $PSCommandPath) ('.MD-Browser-{0}.update.ps1' -f [guid]::NewGuid())
+    try {
+        [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor `
+                                                       [Net.SecurityProtocolType]::Tls12
+        $headers = @{ 'User-Agent' = 'MD-Browser' }
+        $downloadUrl = "https://raw.githubusercontent.com/$script:GitHubRepository/$Tag/MD-Browser.ps1"
+        Invoke-WebRequest -Uri $downloadUrl -Headers $headers -UseBasicParsing -TimeoutSec 15 `
+                          -OutFile $tempPath -ErrorAction Stop
+
+        $downloadedSource = [System.IO.File]::ReadAllText($tempPath)
+        if ($downloadedSource -notmatch '(?m)^\s*\$script:AppVersion\s*=\s*\[version\]''([^'']+)''\s*$') {
+            throw 'The downloaded script does not contain a valid version declaration.'
+        }
+        if ([version]$Matches[1] -ne $ExpectedVersion) {
+            throw "The downloaded script version '$($Matches[1])' does not match GitHub tag '$Tag'."
+        }
+
+        $tokens = $null
+        $parseErrors = $null
+        [System.Management.Automation.Language.Parser]::ParseFile($tempPath, [ref]$tokens, [ref]$parseErrors) | Out-Null
+        if ($parseErrors.Count -gt 0) { throw 'The downloaded script failed PowerShell syntax validation.' }
+
+        [System.IO.File]::Replace($tempPath, $PSCommandPath, $null)
+        return $true
+    } finally {
+        Remove-Item -LiteralPath $tempPath -Force -ErrorAction SilentlyContinue
+    }
+}
+
+function Invoke-StartupUpdateCheck {
+    try { $latest = Get-LatestGitHubVersion }
+    catch { return $false }
+    if (-not $latest -or $latest.Version -le $script:AppVersion) { return $false }
+
+    $answer = [System.Windows.MessageBox]::Show(
+        "MD-Browser $($latest.Version) is available on GitHub. You are running $script:AppVersion.`n`nDownload and install the update now?",
+        'MD-Browser update available',
+        [System.Windows.MessageBoxButton]::YesNo,
+        [System.Windows.MessageBoxImage]::Information)
+    if ($answer -ne [System.Windows.MessageBoxResult]::Yes) { return $false }
+
+    try {
+        Install-GitHubUpdate -Tag $latest.Tag -ExpectedVersion $latest.Version | Out-Null
+        $shell = Join-Path $env:WINDIR 'System32\WindowsPowerShell\v1.0\powershell.exe'
+        if (-not (Test-Path -LiteralPath $shell)) { $shell = (Get-Process -Id $PID).Path }
+        $argList = @('-STA', '-NoProfile', '-File', "`"$PSCommandPath`"")
+        if ($Path) { $argList += @('-Path', "`"$Path`"") }
+        Start-Process -FilePath $shell -ArgumentList $argList `
+                      -WorkingDirectory (Split-Path -Parent $PSCommandPath) -WindowStyle Normal
+        return $true
+    } catch {
+        [System.Windows.MessageBox]::Show(
+            "The update could not be installed. MD-Browser will continue with the current version.`n`n$($_.Exception.Message)",
+            'MD-Browser update',
+            [System.Windows.MessageBoxButton]::OK,
+            [System.Windows.MessageBoxImage]::Warning) | Out-Null
+        return $false
+    }
+}
+
+if (Invoke-StartupUpdateCheck) { return }
 
 #region ---------------------------------------------------------------- state
 

@@ -1,3 +1,4 @@
 # Local test harnesses
 _test*.ps1
 _close-harness.ps1
+.MD-Browser-*.update.ps1
